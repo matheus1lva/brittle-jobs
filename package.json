@@ -1,0 +1,39 @@
+{
+  "name": "brittle-jobs",
+  "version": "0.1.0",
+  "description": "Run brittle test files concurrently, one process per file, on Node or Bare.",
+  "main": "index.js",
+  "bin": {
+    "brittle-jobs": "bin.js"
+  },
+  "files": [
+    "index.js",
+    "bin.js",
+    "lib"
+  ],
+  "scripts": {
+    "test": "brittle-node test/index.js",
+    "lint": "prettier . --check && lunte",
+    "format": "prettier . --write"
+  },
+  "prettier": "prettier-config-holepunch",
+  "dependencies": {
+    "paparam": "^1.13.0",
+    "prettytap": "^0.2.0"
+  },
+  "peerDependencies": {
+    "brittle": ">=4"
+  },
+  "devDependencies": {
+    "bare-runtime": "^1.30.0",
+    "brittle": "^4.1.0",
+    "lunte": "^1.8.4",
+    "prettier": "^3.6.2",
+    "prettier-config-holepunch": "^2.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matheus1lva/brittle-jobs.git"
+  },
+  "license": "MIT"
+}

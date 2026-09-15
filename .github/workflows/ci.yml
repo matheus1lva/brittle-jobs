@@ -15,4 +15,12 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run lint
+      - name: Check Bare runtime
+        run: |
+          # npm can remove the shared bare launcher when pruning optional platform packages.
+          bare_launcher=node_modules/.bin/bare
+          if [ ! -x "$bare_launcher" ]; then
+            ln -sf ../bare-runtime/bin/bare "$bare_launcher"
+          fi
+          "$bare_launcher" --version
       - run: npm test

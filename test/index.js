@@ -191,6 +191,35 @@ test('a runner file may quote its paths either way', async (t) => {
   t.is(failed, 0)
 })
 
+test('a runner file may have line comments between its loads', async (t) => {
+  const out = capture()
+  const { passed, failed } = await run([fixture('runner-comments.mjs')], { cwd, out })
+
+  t.is(passed, 2)
+  t.is(failed, 0)
+  t.ok(out.text().includes('2 files ·'))
+})
+
+test('a runner file may import packages and configure jobs', async (t) => {
+  const out = capture()
+  const { passed, failed } = await run([fixture('runner-configured.mjs')], { cwd, out })
+
+  t.is(passed, 2)
+  t.is(failed, 0)
+  t.ok(out.text().includes('2 files ·'))
+})
+
+test('a tty gets a progress line naming the running files', async (t) => {
+  const slow = slowFiles(t, 2)
+  const out = capture({ isTTY: true, columns: 120 })
+  await run(slow.files, { cwd, out, jobs: 2 })
+
+  const text = out.text()
+  t.ok(text.includes('0/2 · ' + slow.files[0]), 'both files are named while they run')
+  t.ok(text.includes('1/2 · '), 'the count advances as files finish')
+  t.absent(text.split('2/2 files passed')[1].includes('/2 ·'), 'the line is erased at the end')
+})
+
 test('runner files and plain files combine into one queue', async (t) => {
   const out = capture()
   const { passed } = await run([fixture('runner.mjs'), fixture('skip.js')], { cwd, out })
@@ -254,10 +283,11 @@ test('bin exits 1 on failure and 0 on success', (t) => {
   t.is(spawnSync(process.execPath, [bin, '-j', '0', fixture('pass.js')], { cwd }).status, 1)
 })
 
-function capture() {
+function capture({ isTTY = false, columns } = {}) {
   let buf = ''
   return {
-    isTTY: false,
+    isTTY,
+    columns,
     write(chunk) {
       buf += chunk
     },

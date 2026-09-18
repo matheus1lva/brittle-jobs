@@ -25,6 +25,11 @@ test('configured generated runners remain intact', (t) => {
   t.alike(expand(file, { bare: true }), [file])
 })
 
+test('a local import keeps the runner intact', (t) => {
+  const file = absolute('manifest-audit-local-import.mjs')
+  t.alike(expand(file, { bare: false }), [file])
+})
+
 for (const bare of [false, true]) {
   test(`setup and inline tests stay intact on ${bare ? 'bare' : 'node'}`, async (t) => {
     const out = capture()

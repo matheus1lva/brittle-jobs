@@ -22,6 +22,7 @@ module.exports = async function run(files, opts = {}) {
   const running = new Set()
   const start = Date.now()
   let stop = false
+  let bar = report.progress({}, total)
 
   const abort = () => {
     stop = true
@@ -39,6 +40,12 @@ module.exports = async function run(files, opts = {}) {
     listenerInstalled = true
 
     out.write(report.header({ total, runtime, jobs }))
+    bar = report.progress(out, total)
+    const tick = () =>
+      bar.update(
+        results.length,
+        [...running].map((r) => path.relative(cwd, r.file))
+      )
 
     await new Promise((resolve, reject) => {
       let settled = false
@@ -78,6 +85,7 @@ module.exports = async function run(files, opts = {}) {
           running.add(r)
           Promise.resolve(r.promise).then((res) => {
             if (settled) return
+            bar.clear()
             running.delete(r)
             try {
               results.push(res)
@@ -93,6 +101,7 @@ module.exports = async function run(files, opts = {}) {
             next()
           }, stopWithError)
         }
+        tick()
       }
 
       next()
@@ -100,6 +109,7 @@ module.exports = async function run(files, opts = {}) {
 
     out.write(report.summary(results, { total, ms: Date.now() - start, cwd }))
   } finally {
+    bar.stop()
     if (listenerInstalled) process.off('SIGINT', abort)
   }
 

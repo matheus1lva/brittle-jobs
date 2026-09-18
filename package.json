@@ -1,6 +1,6 @@
 {
   "name": "brittle-jobs",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run brittle test files concurrently, one process per file, on Node or Bare.",
   "main": "index.js",
   "bin": {

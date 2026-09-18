@@ -7,7 +7,10 @@ const cmd = paparam
   .command(
     'brittle-jobs',
     paparam.flag('--bare', 'Run test files with bare instead of node'),
-    paparam.flag('--jobs|-j <n>', 'Test files to run concurrently (default: all cores)'),
+    paparam.flag(
+      '--jobs|-j <n>',
+      'Concurrent test-file workers (default: available CPU parallelism)'
+    ),
     paparam.flag('--bail|-b', 'Bail on first assert failure and stop scheduling files'),
     paparam.flag('--timeout|-t <ms>', 'Per-test timeout passed to brittle'),
     paparam.rest('<files>'),

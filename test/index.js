@@ -14,6 +14,8 @@ const fixture = (name) => path.join('test', 'fixtures', name)
 require('./audit-scheduler')
 require('./audit-manifest')
 require('./audit-child')
+require('./audit-timings')
+require('./audit-cpus')
 
 test('a passing file passes', async (t) => {
   const out = capture()
@@ -92,6 +94,15 @@ test('jobs above the file count runs every file at once', async (t) => {
   t.is(maxConcurrency(slow.intervals()), 4)
 })
 
+test('explicit jobs above CPU parallelism launch that many files', async (t) => {
+  const jobs = os.availableParallelism() + 1
+  const slow = slowFiles(t, jobs, { ms: 150 })
+  const { passed } = await run(slow.files, { cwd, out: capture(), jobs })
+
+  t.is(passed, jobs)
+  t.is(maxConcurrency(slow.intervals()), jobs)
+})
+
 test('jobs=1 runs files one at a time', async (t) => {
   const slow = slowFiles(t, 3)
   const { passed } = await run(slow.files, { cwd, out: capture(), jobs: 1 })
@@ -101,10 +112,34 @@ test('jobs=1 runs files one at a time', async (t) => {
 })
 
 test('the default job count is the machine parallelism', async (t) => {
+  const before = process.env.BRITTLE_JOBS
+  delete process.env.BRITTLE_JOBS
+  t.teardown(() => {
+    if (before === undefined) delete process.env.BRITTLE_JOBS
+    else process.env.BRITTLE_JOBS = before
+  })
+
   const out = capture()
   await run([fixture('pass.js')], { cwd, out })
 
   t.ok(out.text().includes(`jobs=${os.availableParallelism()}`))
+})
+
+test('BRITTLE_JOBS sets the default and API jobs overrides it', async (t) => {
+  const before = process.env.BRITTLE_JOBS
+  process.env.BRITTLE_JOBS = '1'
+  t.teardown(() => {
+    if (before === undefined) delete process.env.BRITTLE_JOBS
+    else process.env.BRITTLE_JOBS = before
+  })
+
+  const fromEnv = capture()
+  await run([fixture('pass.js')], { cwd, out: fromEnv })
+  t.ok(fromEnv.text().includes('jobs=1'))
+
+  const fromApi = capture()
+  await run([fixture('pass.js')], { cwd, out: fromApi, jobs: os.availableParallelism() + 1 })
+  t.ok(fromApi.text().includes(`jobs=${os.availableParallelism() + 1}`))
 })
 
 test('files are reported as they finish, not in argument order', async (t) => {
@@ -281,6 +316,25 @@ test('bin exits 1 on failure and 0 on success', (t) => {
   t.is(spawnSync(process.execPath, [bin, fixture('fail.js')], { cwd }).status, 1)
   t.is(spawnSync(process.execPath, [bin], { cwd }).status, 1)
   t.is(spawnSync(process.execPath, [bin, '-j', '0', fixture('pass.js')], { cwd }).status, 1)
+})
+
+test('CLI BRITTLE_JOBS is overridden by --jobs', (t) => {
+  const env = { ...process.env, BRITTLE_JOBS: '1' }
+  const defaultJobs = spawnSync(process.execPath, [bin, fixture('pass.js')], {
+    cwd,
+    env,
+    encoding: 'utf8'
+  })
+  const explicitJobs = spawnSync(process.execPath, [bin, '--jobs=2', fixture('pass.js')], {
+    cwd,
+    env,
+    encoding: 'utf8'
+  })
+
+  t.is(defaultJobs.status, 0)
+  t.ok(defaultJobs.stdout.includes('jobs=1'))
+  t.is(explicitJobs.status, 0)
+  t.ok(explicitJobs.stdout.includes('jobs=2'))
 })
 
 function capture({ isTTY = false, columns } = {}) {

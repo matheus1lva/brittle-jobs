@@ -1,22 +1,27 @@
-const os = require('os')
+const fs = require('fs')
 const path = require('path')
 const expand = require('./lib/manifest')
 const runFile = require('./lib/child')
 const report = require('./lib/report')
+const timings = require('./lib/timings')
+const resolveJobs = require('./lib/jobs')
 
 module.exports = async function run(files, opts = {}) {
   const cwd = opts.cwd ?? process.cwd()
   const out = opts.out ?? process.stdout
   const bare = !!opts.bare
-  const jobs = opts.jobs ?? os.availableParallelism()
+  const jobs = resolveJobs(opts.jobs)
   validateJobs(jobs)
-  const runtime = bare ? 'bare' : process.execPath
+  const runtime = bare ? bareRuntime(cwd) : process.execPath
 
   const args = [require.resolve('brittle/cmd.js', { paths: [cwd] })]
   if (opts.bail) args.push('--bail')
   if (opts.timeout) args.push('--timeout', String(opts.timeout))
 
-  const queue = files.flatMap((file) => expand(path.resolve(cwd, file), { bare }))
+  const expanded = files.flatMap((file) => expand(path.resolve(cwd, file), { bare }))
+  // Bailing asks for the first failure, not the shortest run. Keep the order
+  // that was asked for so the file that fails is the file that was listed first.
+  const queue = opts.bail ? expanded : timings.order(expanded, cwd)
   const total = queue.length
   const results = []
   const running = new Set()
@@ -108,6 +113,7 @@ module.exports = async function run(files, opts = {}) {
     })
 
     out.write(report.summary(results, { total, ms: Date.now() - start, cwd }))
+    timings.write(cwd, results)
   } finally {
     bar.stop()
     if (listenerInstalled) process.off('SIGINT', abort)
@@ -115,6 +121,25 @@ module.exports = async function run(files, opts = {}) {
 
   const failed = results.filter((r) => r.failed).length
   return { passed: results.length - failed, failed, results }
+}
+
+// The launcher on PATH is whichever Bare the shell found, often an older
+// global one, and node_modules/.bin/bare is a Node process that only spawns the
+// real binary. Both cost a process per file. Take the binary the project
+// installed, and only fall back to the launcher when there is none.
+function bareRuntime(cwd) {
+  let bin
+  try {
+    bin = require(require.resolve('bare-runtime', { paths: [cwd] }))('bare')
+  } catch {
+    return 'bare'
+  }
+  try {
+    fs.accessSync(bin, fs.constants.X_OK)
+  } catch {
+    fs.chmodSync(bin, 0o755)
+  }
+  return bin
 }
 
 function validateJobs(jobs) {

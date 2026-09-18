@@ -21,17 +21,22 @@ brittle-jobs --bare -j 4 test/all.ts
 brittle-jobs [flags] <files...>
 
   --bare              run test files with bare instead of node
-  --jobs|-j <n>       test files to run concurrently (positive integer; default: all cores)
+  --jobs|-j <n>       concurrent test-file workers (positive integer; default: available CPU parallelism)
   --bail|-b           bail on first assert failure and stop scheduling files
   --timeout|-t <ms>   per-test timeout passed to brittle
+
+  BRITTLE_JOBS=<n>    concurrent test-file workers, overridden by --jobs
 ```
 
 Each file runs as `<node|bare> brittle/cmd.js [--bail] [--timeout ms] <file>`, exactly what
-`brittle-node`/`brittle-bare` do, so per-file semantics are unchanged. `bare` is resolved on `PATH`
-(npm and bun scripts put `node_modules/.bin` there).
+`brittle-node`/`brittle-bare` do, so per-file semantics are unchanged. On `--bare` the binary comes
+from the project's own `bare-runtime` install, not from `PATH`: a global `bare` is often an older
+version, and `node_modules/.bin/bare` is a Node process whose only job is to spawn the real binary.
+`PATH` is used only when `bare-runtime` is not installed.
 
 Output is one line per file as it finishes, the full spec-formatted TAP for any file that fails, and a
-summary. Exit code is 1 when any file fails its TAP or exits non-zero.
+summary. On a TTY a progress line names the files in flight so a long file cannot look like a hang.
+Exit code is 1 when any file fails its TAP or exits non-zero.
 
 ```
 200 files · bare · jobs=10
@@ -61,8 +66,21 @@ with setup, inline tests, comments, unsupported guards, or other unrecognized so
 process so its behavior stays intact. A runner with no applicable loads also runs as one process; a
 file that emits incomplete or no TAP counts as failed.
 
-`--jobs` limits the number of test file processes running at once. The default is the available CPU
-parallelism, and each process uses the selected runtime (`node` or `bare`).
+### Scheduling
+
+`--jobs` sets the number of concurrent test-file workers. The default is exactly the host's available
+CPU parallelism. `BRITTLE_JOBS` sets the worker count for CI without changing the command line, and
+`--jobs` overrides both; either setting may be higher than the host CPU count. For example:
+
+```bash
+brittle-jobs --bare --jobs=16 test/*.js
+BRITTLE_JOBS=16 brittle-jobs --bare test/*.js
+```
+
+Each run records how long every file took in `node_modules/.cache/brittle-jobs.json`, and the next run
+starts the slowest files first, with never-seen files ahead of them. This only matters once a single
+file takes longer than the rest of the suite divided by `--jobs`; below that the queue is packed
+either way. `--bail` keeps the given order instead, so the first file listed is the first one to fail.
 
 ## API
 

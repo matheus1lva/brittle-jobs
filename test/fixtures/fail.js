@@ -1,5 +1,3 @@
-const test = require('brittle')
-
-test('fails', (t) => {
-  t.is(1, 2, 'one is not two')
-})
+console.log('# failing')
+console.log('not ok 1 - failing')
+process.exit(1)

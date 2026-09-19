@@ -1,6 +1,10 @@
 # brittle-jobs
 
-Run [brittle](https://github.com/holepunchto/brittle) test files concurrently, one process per file, on Node or Bare.
+Run [brittle](https://github.com/holepunchto/brittle) test files concurrently, one isolated process per file.
+
+- A hung file costs one file, not the run: idle and hard timeouts kill the whole process group, grandchildren included.
+- Every file gets its own `TMPDIR`, wiped by the runner on exit or kill, so leaked tmp data cannot starve the disk.
+- Pool size is not tied to core count. Test files are mostly wait-bound, so the default oversubscribes.
 
 ## Installation
 
@@ -8,97 +12,65 @@ Run [brittle](https://github.com/holepunchto/brittle) test files concurrently, o
 npm install --save-dev brittle-jobs
 ```
 
-`brittle` is a peer dependency: the consumer's install is what runs each file.
+The runner needs Node >= 22. Test files run on `bare` by default, or on anything passed to `--runtime`.
 
 ## Usage
 
 ```bash
-brittle-jobs test/*.js
-brittle-jobs --bare -j 4 test/all.ts
+brittle-jobs                          # test/*.{js,ts,mjs}, minus all.*
+brittle-jobs 'test/**/*.ts' --jobs 8
+brittle-jobs test/*.js --runtime node
 ```
 
 ```
-brittle-jobs [flags] <files...>
+brittle-jobs [globs|files...] [flags]
 
-  --bare              run test files with bare instead of node
-  --jobs|-j <n>       concurrent test-file workers (positive integer; default: available CPU parallelism)
-  --bail|-b           bail on first assert failure and stop scheduling files
-  --timeout|-t <ms>   per-test timeout passed to brittle
-
-  BRITTLE_JOBS=<n>    concurrent test-file workers, overridden by --jobs
+  -j, --jobs N          concurrent processes (default BRITTLE_JOBS or 2 x cores)
+  -t, --timeout MS      hard cap per file (default 300000)
+      --idle-timeout MS kill file after this long without output (default 120000)
+      --retries N       rerun failed files, pass on retry = FLAKY (default 0)
+      --min-free-mb N   wait for free disk on tmp root before spawning (default 1024)
+      --shard i/n       run the i-th of n slices
+      --runtime CMD     child command (default bare)
+  -b, --bail            stop on first failure
 ```
 
-Each file runs as `<node|bare> brittle/cmd.js [--bail] [--timeout ms] <file>`, exactly what
-`brittle-node`/`brittle-bare` do, so per-file semantics are unchanged. On `--bare` the binary comes
-from the project's own `bare-runtime` install, not from `PATH`: a global `bare` is often an older
-version, and `node_modules/.bin/bare` is a Node process whose only job is to spawn the real binary.
-`PATH` is used only when `bare-runtime` is not installed.
+Each file runs as `<runtime> <file>`; a brittle test file runs itself. `bare` resolves from the project's own
+`bare-runtime` install, then from `PATH`.
 
-Output is one line per file as it finishes, the full spec-formatted TAP for any file that fails, and a
-summary. On a TTY a progress line names the files in flight so a long file cannot look like a hang.
-Exit code is 1 when any file fails its TAP or exits non-zero.
+Output is one line per file as it finishes, the full output of any file that fails, the ten slowest files, and a
+summary. Exit code is 1 when any file fails or hangs.
 
 ```
-200 files · bare · jobs=10
+[98/99] PASS (3.5s) test/harness.ts
+[99/99] HUNG (120.4s) test/exec.ts: no output for 120000ms, last seen "python create package table"
 
-✓ test/basic/chat.ts · 12 tests · 3.2s
-✗ test/basic/boot.ts · 4.1s
-    ...
-198/200 files passed · 1840 tests · 61.3s
-failed: test/basic/boot.ts, test/api/mesh.ts
+98 pass, 0 flaky, 0 fail, 1 hung of 99 in 120.4s
 ```
 
-### Runner files
+A `HUNG` report includes the process tree of the file at the moment it was killed. On GitHub Actions, failures emit
+`::error file=...::` annotations and their output is grouped.
 
-A generated runner containing only the declarative wrapper emitted by `brittle-make-test` is expanded
-into the files it loads instead of being run as one process. A line prefixed with `if (isBare)` is
-skipped when running on node:
+### Isolation
 
-```js
-const isBare = typeof Bare !== 'undefined'
+- `TMPDIR`, `TMP`, `TEMP` point at a per-file directory under `os.tmpdir()/brittle-jobs-<cwd hash>`. It is removed
+  when the file ends, however it ends. A stale root from a killed runner is removed at startup.
+- `BRITTLE_JOBS_WORKER_ID` and `JEST_WORKER_ID` hold the pool slot (`1..jobs`), for namespacing ports or databases.
+- Files start largest first. `--shard i/n` takes every n-th file of that order, so heavy files spread across shards.
 
-await test.load(import.meta.resolve('./basic/chat.ts'))
-if (isBare) await test.load(import.meta.resolve('./tui/keys.ts'))
-```
+### Limits
 
-The runner file stays a valid brittle entrypoint, so `bare test/all.ts` still works serially. A file
-with setup, inline tests, comments, unsupported guards, or other unrecognized source runs as one
-process so its behavior stays intact. A runner with no applicable loads also runs as one process; a
-file that emits incomplete or no TAP counts as failed.
+- POSIX only: process groups are not available on Windows.
+- A grandchild that calls `setsid` escapes the group kill.
+- Two concurrent runs from the same working directory share a tmp root and wipe each other.
 
-### Scheduling
+## Migrating from 0.1
 
-`--jobs` sets the number of concurrent test-file workers. The default is exactly the host's available
-CPU parallelism. `BRITTLE_JOBS` sets the worker count for CI without changing the command line, and
-`--jobs` overrides both; either setting may be higher than the host CPU count. For example:
-
-```bash
-brittle-jobs --bare --jobs=16 test/*.js
-BRITTLE_JOBS=16 brittle-jobs --bare test/*.js
-```
-
-Each run records how long every file took in `node_modules/.cache/brittle-jobs.json`, and the next run
-starts the slowest files first, with never-seen files ahead of them. This only matters once a single
-file takes longer than the rest of the suite divided by `--jobs`; below that the queue is packed
-either way. `--bail` keeps the given order instead, so the first file listed is the first one to fail.
-
-## API
-
-```js
-const run = require('brittle-jobs')
-
-const { passed, failed, results } = await run(['test/all.ts'], {
-  bare: false,
-  jobs: 4,
-  bail: false,
-  timeout: 30000,
-  cwd: process.cwd(),
-  out: process.stdout
-})
-```
-
-`results` holds one entry per file: `{ file, results, code, signal, stderr, failed, ms }`, where
-`results` is a [prettytap](https://www.npmjs.com/package/prettytap) `Results`.
+- The runner is a CLI only; the `require('brittle-jobs')` API is gone.
+- Default runtime is `bare`. `--bare` is accepted and ignored; use `--runtime node` for Node.
+- Generated `all.*` runner files are skipped, not expanded. Pass the test files or a glob.
+- `--timeout` is now a per-file cap enforced by the runner, not brittle's per-test timeout.
+- No timing cache; files are ordered by size.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "brittle-jobs",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run brittle test files concurrently, one isolated process per file, with hang detection and tmp cleanup.",
   "type": "module",
   "bin": {

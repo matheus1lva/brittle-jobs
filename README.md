@@ -35,8 +35,8 @@ brittle-jobs [globs|files...] [flags]
   -b, --bail            stop on first failure
 ```
 
-Each file runs as `<runtime> <file>`; a brittle test file runs itself. `bare` resolves from the project's own
-`bare-runtime` install, then from `PATH`.
+Each file runs as `<runtime> <file>`; a brittle test file runs itself. `bare` is spawned through the project's own
+`bare-runtime/spawn`, then from `PATH`. Pin `bare-runtime` exactly: that API is not covered by semver.
 
 Output is one line per file as it finishes, the full output of any file that fails, the ten slowest files, and a
 summary. Exit code is 1 when any file fails or hangs.

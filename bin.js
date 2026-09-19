@@ -47,14 +47,13 @@ const idleMs = Number(opts['idle-timeout'])
 const retries = Number(opts.retries)
 const minFree = Number(opts['min-free-mb']) * 1024 * 1024
 const gha = !!process.env.GITHUB_ACTIONS
-const [runtime, ...runtimeArgs] = (opts.runtime || defaultRuntime()).split(' ')
+const [runtime, ...runtimeArgs] = (opts.runtime || 'bare').split(' ')
 
-function defaultRuntime() {
+let spawnBare = null
+if (!opts.runtime) {
   try {
-    return createRequire(path.join(process.cwd(), 'package.json'))('bare-runtime')()
-  } catch {
-    return 'bare'
-  }
+    spawnBare = createRequire(path.join(process.cwd(), 'package.json'))('bare-runtime/spawn')
+  } catch {}
 }
 
 let files = [
@@ -133,7 +132,7 @@ function runOnce(file, slot) {
   return new Promise((resolve) => {
     const tmp = fs.mkdtempSync(path.join(tmpRoot, 'bb-'))
     const started = Date.now()
-    const child = spawn(runtime, [...runtimeArgs, file], {
+    const spawnOpts = {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -144,7 +143,10 @@ function runOnce(file, slot) {
         BRITTLE_JOBS_WORKER_ID: String(slot),
         JEST_WORKER_ID: String(slot)
       }
-    })
+    }
+    const child = spawnBare
+      ? spawnBare('bare', { ...spawnOpts, args: [file] })
+      : spawn(runtime, [...runtimeArgs, file], spawnOpts)
     const pid = child.pid
     if (pid) active.add(pid)
 
@@ -237,7 +239,9 @@ function report(file, res) {
 }
 
 const started = Date.now()
-console.log(`brittle-jobs: ${files.length} files, ${jobs} jobs, runtime ${runtime}`)
+console.log(
+  `brittle-jobs: ${files.length} files, ${jobs} jobs, runtime ${spawnBare ? 'bare-runtime' : runtime}`
+)
 
 let next = 0
 await Promise.all(

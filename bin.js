@@ -16,6 +16,8 @@ const { values: opts, positionals } = parseArgs({
     retries: { type: 'string', default: '0' },
     'min-free-mb': { type: 'string', default: '1024' },
     shard: { type: 'string' },
+    solo: { type: 'string', multiple: true },
+    timings: { type: 'string' },
     runtime: { type: 'string' },
     bail: { type: 'boolean', short: 'b', default: false },
     bare: { type: 'boolean', default: false },
@@ -26,22 +28,21 @@ const { values: opts, positionals } = parseArgs({
 if (opts.help) {
   console.log(`brittle-jobs [globs|files...] [flags]
 
-  -j, --jobs N          concurrent processes (default BRITTLE_JOBS or 2 x cores)
+  -j, --jobs N          concurrent processes (default BRITTLE_JOBS or cores)
   -t, --timeout MS      hard cap per file (default 300000)
       --idle-timeout MS kill file after this long without output (default 120000)
       --retries N       rerun failed files, pass on retry = FLAKY (default 0)
       --min-free-mb N   wait for free disk on tmp root before spawning (default 1024)
       --shard i/n       run the i-th of n slices
+      --solo GLOB       run matching files alone, after the rest (repeatable)
+      --timings FILE    json of file durations: orders and balances shards by it, updated after the run
       --runtime CMD     child command (default bare)
   -b, --bail            stop on first failure`)
   process.exit(0)
 }
 
 const GRACE_MS = 2000
-const jobs = Math.max(
-  1,
-  Number(opts.jobs || process.env.BRITTLE_JOBS) || 2 * os.availableParallelism()
-)
+const jobs = Math.max(1, Number(opts.jobs || process.env.BRITTLE_JOBS) || os.availableParallelism())
 const timeoutMs = Number(opts.timeout)
 const idleMs = Number(opts['idle-timeout'])
 const retries = Number(opts.retries)
@@ -56,6 +57,15 @@ if (!opts.runtime) {
   } catch {}
 }
 
+let timings = {}
+if (opts.timings) {
+  try {
+    timings = JSON.parse(fs.readFileSync(opts.timings, 'utf8'))
+  } catch {}
+}
+const known = Object.values(timings).sort((a, b) => a - b)
+const median = known[known.length >> 1]
+
 let files = [
   ...new Set(
     fs
@@ -63,16 +73,25 @@ let files = [
       .filter((f) => !/^all\./.test(path.basename(f)) && fs.statSync(f).isFile())
   )
 ]
-  .map((f) => ({ f, size: fs.statSync(f).size }))
-  .sort((a, b) => b.size - a.size || a.f.localeCompare(b.f))
-  .map((x) => x.f)
+  .map((f) => ({ f, w: timings[f] ?? median ?? fs.statSync(f).size }))
+  .sort((a, b) => b.w - a.w || a.f.localeCompare(b.f))
 
 if (opts.shard) {
   const [i, n] = opts.shard.split('/').map(Number)
   if (!(i >= 1 && i <= n)) die(`bad --shard ${opts.shard}`)
-  files = files.filter((_, k) => k % n === i - 1)
+  const load = Array(n).fill(0)
+  files = files.filter((x) => {
+    const k = load.indexOf(Math.min(...load))
+    load[k] += x.w || 1
+    return k === i - 1
+  })
 }
+files = files.map((x) => x.f)
 if (files.length === 0) die('no test files matched')
+
+const soloSet = new Set(opts.solo ? fs.globSync(opts.solo) : [])
+const pool = files.filter((f) => !soloSet.has(f))
+const solo = files.filter((f) => soloSet.has(f))
 
 // ponytail: tmp root keyed by cwd, two concurrent runs in one cwd wipe each other. Key by pid if that happens.
 const cwdHash = crypto.createHash('sha1').update(process.cwd()).digest('hex').slice(0, 8)
@@ -181,9 +200,14 @@ function runOnce(file, slot) {
     touch()
 
     let exit = null
+    let done = false
+    let closeTimer
     const finish = () => {
+      if (done) return
+      done = true
       clearTimeout(hardTimer)
       clearTimeout(idleTimer)
+      clearTimeout(closeTimer)
       active.delete(pid)
       fs.rmSync(tmp, { recursive: true, force: true })
       for (const w of waiters.splice(0)) w()
@@ -205,6 +229,11 @@ function runOnce(file, slot) {
     child.on('exit', (code, signal) => {
       exit = { code, signal }
       killGroup(pid, 'SIGKILL')
+      closeTimer = setTimeout(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+        finish()
+      }, GRACE_MS)
     })
     child.on('close', () => exit && !exit.err && finish())
   })
@@ -235,7 +264,10 @@ function report(file, res) {
   if (gha) console.log(`::error file=${file}::${res.status}${reason}\n::group::${file} output`)
   console.log(res.output.trim())
   if (gha) console.log('::endgroup::')
-  if (opts.bail) stop = true
+  if (opts.bail) {
+    stop = true
+    for (const pid of active) killGroup(pid, 'SIGKILL')
+  }
 }
 
 const started = Date.now()
@@ -245,16 +277,26 @@ console.log(
 
 let next = 0
 await Promise.all(
-  Array.from({ length: Math.min(jobs, files.length) }, async (_, i) => {
-    while (!stop && next < files.length) {
-      const file = files[next++]
+  Array.from({ length: Math.min(jobs, pool.length) }, async (_, i) => {
+    while (!stop && next < pool.length) {
+      const file = pool[next++]
       const res = await runFile(file, i + 1)
-      if (res) report(file, res)
+      if (res && !stop) report(file, res)
     }
   })
 )
+for (const file of solo) {
+  if (stop) break
+  const res = await runFile(file, 1)
+  if (res) report(file, res)
+}
 
 fs.rmSync(tmpRoot, { recursive: true, force: true })
+
+if (opts.timings) {
+  for (const r of results) if (r.status === 'PASS') timings[r.file] = Math.round(r.secs * 1000)
+  fs.writeFileSync(opts.timings, JSON.stringify(timings, Object.keys(timings).sort(), 2) + '\n')
+}
 
 const count = (s) => results.filter((r) => r.status === s).length
 const bad = results.filter((r) => r.status === 'FAIL' || r.status === 'HUNG')

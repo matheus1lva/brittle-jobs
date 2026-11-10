@@ -4,7 +4,8 @@ Run [brittle](https://github.com/holepunchto/brittle) test files concurrently, o
 
 - A hung file costs one file, not the run: idle and hard timeouts kill the whole process group, grandchildren included.
 - Every file gets its own `TMPDIR`, wiped by the runner on exit or kill, so leaked tmp data cannot starve the disk.
-- Pool size is not tied to core count. Test files are mostly wait-bound, so the default oversubscribes.
+- Pool size defaults to the core count. Oversubscribing made a CPU-bound suite slower, so raise `-j` only for
+  wait-bound suites.
 
 ## Installation
 
@@ -25,12 +26,14 @@ brittle-jobs test/*.js --runtime node
 ```
 brittle-jobs [globs|files...] [flags]
 
-  -j, --jobs N          concurrent processes (default BRITTLE_JOBS or 2 x cores)
+  -j, --jobs N          concurrent processes (default BRITTLE_JOBS or cores)
   -t, --timeout MS      hard cap per file (default 300000)
       --idle-timeout MS kill file after this long without output (default 120000)
       --retries N       rerun failed files, pass on retry = FLAKY (default 0)
       --min-free-mb N   wait for free disk on tmp root before spawning (default 1024)
       --shard i/n       run the i-th of n slices
+      --solo GLOB       run matching files alone, after the rest (repeatable)
+      --timings FILE    json of file durations: orders and balances shards by it, updated after the run
       --runtime CMD     child command (default bare)
   -b, --bail            stop on first failure
 ```
@@ -56,12 +59,17 @@ A `HUNG` report includes the process tree of the file at the moment it was kille
 - `TMPDIR`, `TMP`, `TEMP` point at a per-file directory under `os.tmpdir()/brittle-jobs-<cwd hash>`. It is removed
   when the file ends, however it ends. A stale root from a killed runner is removed at startup.
 - `BRITTLE_JOBS_WORKER_ID` and `JEST_WORKER_ID` hold the pool slot (`1..jobs`), for namespacing ports or databases.
-- Files start largest first. `--shard i/n` takes every n-th file of that order, so heavy files spread across shards.
+- Files start heaviest first. `--shard i/n` assigns each file, in that order, to the lightest shard so far.
+- Weight is the file size, or its duration with `--timings`. A file missing from the timings gets the median.
+- Every shard must read the same timings file, or shards drop and repeat files. Commit it; do not restore it from
+  a per-job cache. Each run merges the durations of passing files back into it.
+- `--solo` files run one at a time once the pool is empty, for files that starve each other under concurrency.
 
 ### Limits
 
 - POSIX only: process groups are not available on Windows.
-- A grandchild that calls `setsid` escapes the group kill.
+- A grandchild that calls `setsid` escapes the group kill. If it holds the file's stdout, the runner stops waiting
+  2s after the file exits.
 - Two concurrent runs from the same working directory share a tmp root and wipe each other.
 
 ## Migrating from 0.1
@@ -70,7 +78,7 @@ A `HUNG` report includes the process tree of the file at the moment it was kille
 - Default runtime is `bare`. `--bare` is accepted and ignored; use `--runtime node` for Node.
 - Generated `all.*` runner files are skipped, not expanded. Pass the test files or a glob.
 - `--timeout` is now a per-file cap enforced by the runner, not brittle's per-test timeout.
-- No timing cache; files are ordered by size.
+- No implicit timing cache; files are ordered by size unless `--timings` is passed.
 
 ## License
 

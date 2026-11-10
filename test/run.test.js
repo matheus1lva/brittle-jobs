@@ -62,3 +62,56 @@ test('shards cover every file exactly once', () => {
   )
   assert.deepEqual(seen.sort(), [...all].sort())
 })
+
+test('solo file starts after every pooled file ended', () => {
+  const r = run(
+    [fx('span-a.js'), fx('span-b.js'), fx('span-solo.js'), '--solo', fx('span-solo.js'), '-j', '3'],
+    'spans'
+  )
+  assert.equal(r.status, 0)
+  const rows = fs
+    .readFileSync(r.outFile, 'utf8')
+    .trim()
+    .split('\n')
+    .map((l) => l.split(' '))
+  const at = (name, e) => Number(rows.find((x) => x[0].endsWith(name) && x[1] === e)[2])
+  assert.ok(at('span-solo.js', 'start') >= Math.max(at('span-a.js', 'end'), at('span-b.js', 'end')))
+})
+
+test('grandchild holding stdio outside the group does not stall the run', () => {
+  const t0 = Date.now()
+  const r = run([fx('orphan-stdio.js')], 'orphan')
+  process.kill(Number(fs.readFileSync(r.outFile, 'utf8')), 'SIGKILL')
+  assert.equal(r.status, 0)
+  assert.ok(Date.now() - t0 < 5000)
+})
+
+test('bail kills files still running', () => {
+  const t0 = Date.now()
+  const r = run([fx('fail.js'), fx('sleep.js'), '--bail', '-j', '2'])
+  assert.equal(r.status, 1)
+  assert.ok(Date.now() - t0 < 5000)
+  assert.doesNotMatch(r.stdout, /sleep\.js/)
+})
+
+test('timings balance shards by duration and are updated after the run', () => {
+  const file = path.join(scratch, 'timings.json')
+  const all = [fx('pass.js'), fx('fail.js'), fx('tmp-leak.js')]
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ [fx('pass.js')]: 9000, [fx('fail.js')]: 10, [fx('tmp-leak.js')]: 10 })
+  )
+  const names = (s) =>
+    [
+      ...run([...all, '--timings', file, '--shard', s], 'tshard').stdout.matchAll(
+        /\] \S+ \(\S+\) (\S+\.js)/g
+      )
+    ]
+      .map((m) => m[1])
+      .sort()
+  assert.deepEqual(names('1/2'), [fx('pass.js')])
+  assert.deepEqual(names('2/2'), [fx('fail.js'), fx('tmp-leak.js')].sort())
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.ok(saved[fx('pass.js')] < 9000)
+  assert.equal(saved[fx('fail.js')], 10)
+})
